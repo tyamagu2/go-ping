@@ -77,19 +77,15 @@ func ParseEchoMessageWithIPv4Header(b []byte) (*EchoMessage, error) {
 func checksum(b []byte) uint16 {
 	count := len(b)
 	sum := uint32(0)
-
 	for i := 0; i < count-1; i += 2 {
 		sum += uint32(b[i])<<8 | uint32(b[i+1])
 	}
-
 	if count&1 != 0 {
-		sum += uint32(b[count-1])
+		sum += uint32(b[count-1]) << 8
 	}
-
 	for (sum >> 16) > 0 {
 		sum = (sum & 0xffff) + (sum >> 16)
 	}
-
 	return ^(uint16(sum))
 }
 

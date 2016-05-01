@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 )
 
 func getIPAddr(host string) (net.IP, error) {
@@ -110,21 +111,38 @@ func main() {
 	defer conn.Close()
 
 	id := uint16(os.Getpid() & 0xffff)
+	now, err := time.Now().MarshalBinary()
+	if err != nil {
+		fmt.Errorf("Time.MarshalBinary:", err)
+		os.Exit(1)
+	}
 	m := EchoMessage{
 		Type: ECHO,
 		Code: 0,
 		ID:   id,
 		Seq:  0,
-		Data: []byte("HELLO PING"),
+		Data: now,
 	}
 	mb := m.Marshal()
-	fmt.Println(fmt.Sprintf("%x", mb))
-	conn.Write(mb)
-
 	rb := make([]byte, 100)
+	_, err = conn.Write(mb)
+	if err != nil {
+		fmt.Errorf("Write:", err)
+		os.Exit(1)
+	}
+
 	n, err := conn.Read(rb)
-	fmt.Println(fmt.Sprintf("%x", rb[:n]))
+	received_at := time.Now()
 
 	rm, err := ParseEchoMessageWithIPv4Header(rb[:n])
-	fmt.Println(rm)
+
+	if rm.Type == ECHO_REPLY && rm.ID == id {
+		sent_at := time.Time{}
+		err = sent_at.UnmarshalBinary(rm.Data)
+		if err != nil {
+			fmt.Errorf("Time.UnmarshalBinary:", err)
+		}
+		rtt := received_at.Sub(sent_at)
+		fmt.Println(rtt)
+	}
 }

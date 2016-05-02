@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"time"
 )
 
@@ -90,6 +91,66 @@ func checksum(b []byte) uint16 {
 	return ^(uint16(sum))
 }
 
+func pinger(conn net.Conn, id uint16, sigc chan os.Signal, c chan int) {
+	nt := 0
+	seq := uint16(0)
+	t := time.NewTicker(1 * time.Second)
+	done := false
+	for !done {
+		select {
+		case <-sigc:
+			done = true
+		case <-t.C:
+			tb, err := time.Now().MarshalBinary()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Time.MarshalBinary:", err)
+				os.Exit(1)
+			}
+			m := EchoMessage{
+				Type: ECHO,
+				Code: 0,
+				ID:   id,
+				Seq:  seq,
+				Data: tb,
+			}
+			seq += 1
+			mb := m.Marshal()
+			_, err = conn.Write(mb)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Write:", err)
+				os.Exit(1)
+			}
+			nt += 1
+		}
+	}
+	t.Stop()
+	c <- nt
+}
+
+func PrintStats(rtts []time.Duration, nt int) {
+	if nt == 0 {
+		return
+	}
+	var max time.Duration = 0
+	var min time.Duration = 1000000000
+	var sum time.Duration = 0
+	for _, rtt := range rtts {
+		sum += rtt
+		if rtt > max {
+			max = rtt
+		}
+		if rtt < min {
+			min = rtt
+		}
+	}
+	nr := len(rtts)
+	loss := 100 * (nt - nr) / nt
+	fmt.Println("\n----", os.Args[1], "ping statistics  -----")
+	fmt.Println(nt, "packets transmitted,", nr, "packets received,", loss, "% packet loss")
+	avg := time.Duration(int(sum.Nanoseconds()) / len(rtts))
+	fmt.Println("min/max/avg = ", min, "/", max, "/", avg)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "arg error")
@@ -110,39 +171,45 @@ func main() {
 	}
 	defer conn.Close()
 
+	fmt.Println("PING", os.Args[1], "(", ip, ")")
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt)
+	c := make(chan int, 1)
+
 	id := uint16(os.Getpid() & 0xffff)
-	now, err := time.Now().MarshalBinary()
-	if err != nil {
-		fmt.Errorf("Time.MarshalBinary:", err)
-		os.Exit(1)
-	}
-	m := EchoMessage{
-		Type: ECHO,
-		Code: 0,
-		ID:   id,
-		Seq:  0,
-		Data: now,
-	}
-	mb := m.Marshal()
-	rb := make([]byte, 100)
-	_, err = conn.Write(mb)
-	if err != nil {
-		fmt.Errorf("Write:", err)
-		os.Exit(1)
-	}
+	go pinger(conn, id, sigc, c)
 
-	n, err := conn.Read(rb)
-	received_at := time.Now()
+	var rtts []time.Duration
+	nt := 0
+	done := false
+	for !done {
+		select {
+		case nt = <-c:
+			done = true
+			break
+		default:
+			rb := make([]byte, 100)
+			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			n, err := conn.Read(rb)
+			if err != nil {
+				// FIXME
+				continue
+			}
+			received_at := time.Now()
 
-	rm, err := ParseEchoMessageWithIPv4Header(rb[:n])
+			rm, err := ParseEchoMessageWithIPv4Header(rb[:n])
 
-	if rm.Type == ECHO_REPLY && rm.ID == id {
-		sent_at := time.Time{}
-		err = sent_at.UnmarshalBinary(rm.Data)
-		if err != nil {
-			fmt.Errorf("Time.UnmarshalBinary:", err)
+			if rm.Type == ECHO_REPLY && rm.ID == id {
+				sent_at := time.Time{}
+				err = sent_at.UnmarshalBinary(rm.Data)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Time.UnmarshalBinary:", err)
+				}
+				rtt := received_at.Sub(sent_at)
+				rtts = append(rtts, rtt)
+				fmt.Println("seq =", rm.Seq, "time =", rtt)
+			}
 		}
-		rtt := received_at.Sub(sent_at)
-		fmt.Println(rtt)
 	}
+	PrintStats(rtts, nt)
 }

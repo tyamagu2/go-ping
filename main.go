@@ -180,6 +180,7 @@ func main() {
 	go pinger(conn, id, sigc, c)
 
 	var rtts []time.Duration
+	rb := make([]byte, 100)
 	nt := 0
 	done := false
 	for !done {
@@ -188,7 +189,6 @@ func main() {
 			done = true
 			break
 		default:
-			rb := make([]byte, 100)
 			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 			n, err := conn.Read(rb)
 			if err != nil {
